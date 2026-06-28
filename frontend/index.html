@@ -1,0 +1,461 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>SnippetVault</title>
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/github-dark.min.css">
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <header class="app-header">
+    <div>
+      <h1>SnippetVault</h1>
+      <p>Save, search, and share reusable developer snippets.</p>
+    </div>
+    <nav class="nav-actions">
+      <button id="homeBtn" class="secondary">Feed</button>
+      <button id="newBtn">New Snippet</button>
+    </nav>
+  </header>
+
+  <main>
+    <div id="message" class="message" hidden></div>
+
+    <section id="feedView" class="view active">
+      <div class="toolbar">
+        <input id="searchInput" type="search" placeholder="Search snippets">
+        <select id="languageFilter">
+          <option value="">All languages</option>
+        </select>
+      </div>
+      <div id="tagPills" class="tag-pills"></div>
+      <div id="feedStatus" class="status"></div>
+      <div id="snippetGrid" class="snippet-grid"></div>
+    </section>
+
+    <section id="detailView" class="view">
+      <button id="backToFeedBtn" class="secondary">Back</button>
+      <article class="detail-panel">
+        <div class="detail-header">
+          <div>
+            <h2 id="detailTitle"></h2>
+            <div id="detailMeta" class="meta"></div>
+          </div>
+          <div class="button-row">
+            <button id="copyBtn" class="secondary">Copy</button>
+            <button id="editBtn" class="secondary">Edit</button>
+            <button id="deleteBtn" class="danger">Delete</button>
+          </div>
+        </div>
+        <div id="detailTags" class="tag-pills"></div>
+        <pre><code id="detailCode"></code></pre>
+        <div class="summary-panel">
+          <h3>AI Summary</h3>
+          <p id="summaryText"></p>
+          <button id="generateDetailSummaryBtn" class="secondary">Generate Summary</button>
+        </div>
+      </article>
+    </section>
+
+    <section id="formView" class="view">
+      <form id="snippetForm" class="snippet-form">
+        <div class="form-header">
+          <h2 id="formTitle">New Snippet</h2>
+          <button type="button" id="cancelFormBtn" class="secondary">Cancel</button>
+        </div>
+        <label>
+          Title
+          <input id="titleInput" type="text" required maxlength="200">
+        </label>
+        <label>
+          Language
+          <select id="languageInput">
+            <option value="plaintext">plaintext</option>
+            <option value="python">python</option>
+            <option value="javascript">javascript</option>
+            <option value="typescript">typescript</option>
+            <option value="sql">sql</option>
+            <option value="bash">bash</option>
+            <option value="html">html</option>
+            <option value="css">css</option>
+            <option value="json">json</option>
+            <option value="yaml">yaml</option>
+            <option value="regex">regex</option>
+          </select>
+        </label>
+        <label>
+          Code
+          <textarea id="codeInput" required spellcheck="false"></textarea>
+        </label>
+        <label>
+          Tags
+          <input id="tagsInput" type="text" placeholder="aws, flask, mysql">
+        </label>
+        <label>
+          AI Summary
+          <textarea id="summaryInput" spellcheck="false"></textarea>
+        </label>
+        <div class="button-row">
+          <button id="saveBtn" type="submit">Save Snippet</button>
+          <button id="generateFormSummaryBtn" type="button" class="secondary">Generate AI Summary</button>
+        </div>
+      </form>
+    </section>
+  </main>
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
+  <script src="config.js"></script>
+  <script>
+    const state = {
+      snippets: [],
+      tags: [],
+      languages: [],
+      selectedTag: '',
+      currentSnippet: null,
+      editingId: null
+    };
+
+    const els = {
+      message: document.getElementById('message'),
+      feedView: document.getElementById('feedView'),
+      detailView: document.getElementById('detailView'),
+      formView: document.getElementById('formView'),
+      searchInput: document.getElementById('searchInput'),
+      languageFilter: document.getElementById('languageFilter'),
+      tagPills: document.getElementById('tagPills'),
+      feedStatus: document.getElementById('feedStatus'),
+      snippetGrid: document.getElementById('snippetGrid'),
+      detailTitle: document.getElementById('detailTitle'),
+      detailMeta: document.getElementById('detailMeta'),
+      detailTags: document.getElementById('detailTags'),
+      detailCode: document.getElementById('detailCode'),
+      summaryText: document.getElementById('summaryText'),
+      generateDetailSummaryBtn: document.getElementById('generateDetailSummaryBtn'),
+      snippetForm: document.getElementById('snippetForm'),
+      formTitle: document.getElementById('formTitle'),
+      titleInput: document.getElementById('titleInput'),
+      languageInput: document.getElementById('languageInput'),
+      codeInput: document.getElementById('codeInput'),
+      tagsInput: document.getElementById('tagsInput'),
+      summaryInput: document.getElementById('summaryInput'),
+      saveBtn: document.getElementById('saveBtn'),
+      generateFormSummaryBtn: document.getElementById('generateFormSummaryBtn')
+    };
+
+    // Shows one application view and hides the others.
+    function showView(name) {
+      for (const view of [els.feedView, els.detailView, els.formView]) {
+        view.classList.remove('active');
+      }
+      document.getElementById(`${name}View`).classList.add('active');
+    }
+
+    // Displays a visible status or error message for the user.
+    function showMessage(text, type = 'info') {
+      els.message.textContent = text;
+      els.message.className = `message ${type}`;
+      els.message.hidden = !text;
+    }
+
+    // Performs a fetch request and converts non-2xx responses into readable errors.
+    async function fetchJson(url, options = {}) {
+      const response = await fetch(url, options);
+      let payload = null;
+      try {
+        payload = await response.json();
+      } catch {
+        payload = {};
+      }
+      if (!response.ok) {
+        throw new Error(payload.error || payload.detail || `Request failed with status ${response.status}`);
+      }
+      return payload;
+    }
+
+    // Escapes code before inserting it into syntax-highlighted HTML.
+    function escapeHtml(value) {
+      return value.replace(/[&<>"']/g, char => ({
+        '&': '&amp;',
+        '<': '&lt;',
+        '>': '&gt;',
+        '"': '&quot;',
+        "'": '&#039;'
+      }[char]));
+    }
+
+    // Converts a tag string into an array expected by the API.
+    function parseTags(value) {
+      return value.split(',').map(tag => tag.trim()).filter(Boolean);
+    }
+
+    // Returns the first five code lines for feed cards.
+    function previewCode(code) {
+      return code.split('\n').slice(0, 5).join('\n');
+    }
+
+    // Loads tags and languages used for filters.
+    async function loadFilters() {
+      try {
+        const [tags, languages] = await Promise.all([
+          fetchJson(`${CONFIG.EC2_API_BASE}/tags`),
+          fetchJson(`${CONFIG.EC2_API_BASE}/languages`)
+        ]);
+        state.tags = tags;
+        state.languages = languages;
+        renderTags();
+        renderLanguages();
+      } catch (error) {
+        showMessage(error.message, 'error');
+      }
+    }
+
+    // Loads snippets using the active search, language, and tag filters.
+    async function loadSnippets() {
+      els.feedStatus.textContent = 'Loading snippets...';
+      const params = new URLSearchParams();
+      if (els.searchInput.value.trim()) params.set('search', els.searchInput.value.trim());
+      if (els.languageFilter.value) params.set('language', els.languageFilter.value);
+      if (state.selectedTag) params.set('tag', state.selectedTag);
+
+      try {
+        state.snippets = await fetchJson(`${CONFIG.EC2_API_BASE}/snippets?${params.toString()}`);
+        els.feedStatus.textContent = state.snippets.length ? '' : 'No snippets found.';
+        renderSnippets();
+      } catch (error) {
+        els.feedStatus.textContent = '';
+        showMessage(error.message, 'error');
+      }
+    }
+
+    // Renders language filter options from the backend.
+    function renderLanguages() {
+      const current = els.languageFilter.value;
+      els.languageFilter.innerHTML = '<option value="">All languages</option>';
+      for (const language of state.languages) {
+        const option = document.createElement('option');
+        option.value = language;
+        option.textContent = language;
+        els.languageFilter.appendChild(option);
+      }
+      els.languageFilter.value = current;
+    }
+
+    // Renders clickable tag filter pills.
+    function renderTags() {
+      els.tagPills.innerHTML = '';
+      for (const tag of state.tags) {
+        const button = document.createElement('button');
+        button.className = `tag ${state.selectedTag === tag ? 'active' : ''}`;
+        button.textContent = tag;
+        button.addEventListener('click', () => {
+          state.selectedTag = state.selectedTag === tag ? '' : tag;
+          renderTags();
+          loadSnippets();
+        });
+        els.tagPills.appendChild(button);
+      }
+    }
+
+    // Renders the snippet feed card grid.
+    function renderSnippets() {
+      els.snippetGrid.innerHTML = '';
+      for (const snippet of state.snippets) {
+        const card = document.createElement('article');
+        card.className = 'snippet-card';
+        const tags = snippet.tags.map(tag => `<span>${escapeHtml(tag)}</span>`).join('');
+        card.innerHTML = `
+          <div class="card-header">
+            <h2>${escapeHtml(snippet.title)}</h2>
+            <span class="language-badge">${escapeHtml(snippet.language)}</span>
+          </div>
+          <pre><code class="language-${escapeHtml(snippet.language)}">${escapeHtml(previewCode(snippet.code))}</code></pre>
+          <div class="card-footer">
+            <div class="inline-tags">${tags}</div>
+            <button class="secondary">View</button>
+          </div>
+        `;
+        card.querySelector('button').addEventListener('click', () => loadSnippetDetail(snippet.id));
+        els.snippetGrid.appendChild(card);
+      }
+      hljs.highlightAll();
+    }
+
+    // Loads and displays a single snippet detail view.
+    async function loadSnippetDetail(id) {
+      try {
+        const snippet = await fetchJson(`${CONFIG.EC2_API_BASE}/snippets/${id}`);
+        state.currentSnippet = snippet;
+        els.detailTitle.textContent = snippet.title;
+        els.detailMeta.textContent = `${snippet.language} · ${new Date(snippet.created_at).toLocaleString()}`;
+        els.detailTags.innerHTML = snippet.tags.map(tag => `<span class="tag static">${escapeHtml(tag)}</span>`).join('');
+        els.detailCode.className = `language-${snippet.language}`;
+        els.detailCode.textContent = snippet.code;
+        els.summaryText.textContent = snippet.ai_summary || 'No AI summary has been generated yet.';
+        els.generateDetailSummaryBtn.hidden = Boolean(snippet.ai_summary);
+        showView('detail');
+        hljs.highlightElement(els.detailCode);
+      } catch (error) {
+        showMessage(error.message, 'error');
+      }
+    }
+
+    // Opens the new snippet form or edit form with existing values.
+    function openForm(snippet = null) {
+      state.editingId = snippet ? snippet.id : null;
+      els.formTitle.textContent = snippet ? 'Edit Snippet' : 'New Snippet';
+      els.titleInput.value = snippet ? snippet.title : '';
+      els.languageInput.value = snippet ? snippet.language : 'plaintext';
+      els.codeInput.value = snippet ? snippet.code : '';
+      els.tagsInput.value = snippet ? snippet.tags.join(', ') : '';
+      els.summaryInput.value = snippet && snippet.ai_summary ? snippet.ai_summary : '';
+      showView('form');
+    }
+
+    // Saves a new or edited snippet through the EC2 Flask API.
+    async function saveSnippet(event) {
+      event.preventDefault();
+      els.saveBtn.disabled = true;
+      els.saveBtn.textContent = 'Saving...';
+      const payload = {
+        title: els.titleInput.value.trim(),
+        code: els.codeInput.value,
+        language: els.languageInput.value,
+        tags: parseTags(els.tagsInput.value),
+        user_id: 1,
+        ai_summary: els.summaryInput.value.trim() || null
+      };
+
+      try {
+        if (state.editingId) {
+          await fetchJson(`${CONFIG.EC2_API_BASE}/snippets/${state.editingId}`, {
+            method: 'PUT',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(payload)
+          });
+          showMessage('Snippet updated.', 'success');
+          await loadSnippetDetail(state.editingId);
+        } else {
+          const result = await fetchJson(`${CONFIG.EC2_API_BASE}/snippets`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(payload)
+          });
+          showMessage('Snippet saved.', 'success');
+          await loadFilters();
+          await loadSnippetDetail(result.id);
+        }
+      } catch (error) {
+        showMessage(error.message, 'error');
+      } finally {
+        els.saveBtn.disabled = false;
+        els.saveBtn.textContent = 'Save Snippet';
+      }
+    }
+
+    // Requests a one-line AI summary from API Gateway.
+    async function generateSummary(code, language) {
+      return fetchJson(`${CONFIG.APIGW_BASE}/ai-summary`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ code, language })
+      });
+    }
+
+    // Generates a summary for the form textarea content.
+    async function generateFormSummary() {
+      if (!els.codeInput.value.trim()) {
+        showMessage('Paste code before generating a summary.', 'error');
+        return;
+      }
+      els.generateFormSummaryBtn.disabled = true;
+      els.generateFormSummaryBtn.textContent = 'Generating...';
+      try {
+        const result = await generateSummary(els.codeInput.value, els.languageInput.value);
+        els.summaryInput.value = result.summary;
+      } catch (error) {
+        showMessage(error.message, 'error');
+      } finally {
+        els.generateFormSummaryBtn.disabled = false;
+        els.generateFormSummaryBtn.textContent = 'Generate AI Summary';
+      }
+    }
+
+    // Generates and saves a summary for the current detail snippet.
+    async function generateDetailSummary() {
+      if (!state.currentSnippet) return;
+      els.generateDetailSummaryBtn.disabled = true;
+      els.generateDetailSummaryBtn.textContent = 'Generating...';
+      try {
+        const result = await generateSummary(state.currentSnippet.code, state.currentSnippet.language);
+        await fetchJson(`${CONFIG.EC2_API_BASE}/snippets/${state.currentSnippet.id}`, {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ ai_summary: result.summary })
+        });
+        els.summaryText.textContent = result.summary;
+        els.generateDetailSummaryBtn.hidden = true;
+        state.currentSnippet.ai_summary = result.summary;
+      } catch (error) {
+        showMessage(error.message, 'error');
+      } finally {
+        els.generateDetailSummaryBtn.disabled = false;
+        els.generateDetailSummaryBtn.textContent = 'Generate Summary';
+      }
+    }
+
+    // Deletes the current snippet after confirmation.
+    async function deleteCurrentSnippet() {
+      if (!state.currentSnippet || !confirm('Delete this snippet?')) return;
+      try {
+        await fetchJson(`${CONFIG.EC2_API_BASE}/snippets/${state.currentSnippet.id}`, { method: 'DELETE' });
+        showMessage('Snippet deleted.', 'success');
+        showView('feed');
+        await loadFilters();
+        await loadSnippets();
+      } catch (error) {
+        showMessage(error.message, 'error');
+      }
+    }
+
+    // Copies the current snippet code to the clipboard.
+    async function copyCurrentCode() {
+      if (!state.currentSnippet) return;
+      try {
+        await navigator.clipboard.writeText(state.currentSnippet.code);
+        showMessage('Code copied.', 'success');
+      } catch (error) {
+        showMessage(`Copy failed: ${error.message}`, 'error');
+      }
+    }
+
+    // Debounces feed search input so the API is not called on every keystroke instantly.
+    function debounce(callback, delay = 300) {
+      let timer;
+      return (...args) => {
+        clearTimeout(timer);
+        timer = setTimeout(() => callback(...args), delay);
+      };
+    }
+
+    document.getElementById('homeBtn').addEventListener('click', () => {
+      showView('feed');
+      loadSnippets();
+    });
+    document.getElementById('newBtn').addEventListener('click', () => openForm());
+    document.getElementById('backToFeedBtn').addEventListener('click', () => showView('feed'));
+    document.getElementById('cancelFormBtn').addEventListener('click', () => showView(state.currentSnippet ? 'detail' : 'feed'));
+    document.getElementById('copyBtn').addEventListener('click', copyCurrentCode);
+    document.getElementById('editBtn').addEventListener('click', () => openForm(state.currentSnippet));
+    document.getElementById('deleteBtn').addEventListener('click', deleteCurrentSnippet);
+    els.snippetForm.addEventListener('submit', saveSnippet);
+    els.generateFormSummaryBtn.addEventListener('click', generateFormSummary);
+    els.generateDetailSummaryBtn.addEventListener('click', generateDetailSummary);
+    els.searchInput.addEventListener('input', debounce(loadSnippets));
+    els.languageFilter.addEventListener('change', loadSnippets);
+
+    loadFilters();
+    loadSnippets();
+  </script>
+</body>
+</html>
